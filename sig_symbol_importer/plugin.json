@@ -1,0 +1,18 @@
+{
+  "pluginmetadataversion": 2,
+  "name": "Sig Symbol Importer",
+  "type": ["helper"],
+  "api": ["python3"],
+  "description": "Import symbol names from a JSON manifest of signature patterns. Renames functions / data vars and tags each resolved address.",
+  "longdescription": "Loads a JSON file of {name, module, section, kind, patterns[]} where each pattern carries IDA-style hex bytes + optional resolve chain (absolute / offset / dereference, mirroring fvc CPointer). For every symbol whose module matches the current BV, the plugin scans the chosen section (default .text) for the first matching pattern, applies the resolve chain to derive the target address, renames the function or data symbol there, and pins a `sig_symbol` tag + comment so the address is bookmarked and re-exportable.",
+  "license": {"name": "MIT", "text": "Internal use."},
+  "platforms": ["Windows", "Linux", "Darwin"],
+  "installinstructions": {
+    "Windows": "Place folder under %APPDATA%/Binary Ninja/plugins/",
+    "Linux": "Place folder under ~/.binaryninja/plugins/",
+    "Darwin": "Place folder under ~/Library/Application Support/Binary Ninja/plugins/"
+  },
+  "version": "0.1.0",
+  "author": "internal",
+  "minimumbinaryninjaversion": 4000
+}
