@@ -1,0 +1,18 @@
+{
+  "pluginmetadataversion": 2,
+  "name": "CS2 Schema Loader",
+  "type": ["helper"],
+  "api": ["python3"],
+  "description": "Apply CS2 schema-system class layouts (from cs2-dumper output) as named user types in Binary Ninja, so client.dll/server.dll/etc. show real schema names + field offsets.",
+  "longdescription": "Reads cs2-dumper's generated headers (output/<module>.hpp + <module>.json) and registers each schema class as a named user type. Inheritance is preserved via a __base member, enums become typed enums, and field types parsed from the // type comments map onto Source 2 primitives, CHandle<T>, CUtlVector<T>, etc. Run via Plugins > CS2 Schema > Apply Schemas From cs2-dumper.",
+  "license": {"name": "MIT", "text": "Internal use."},
+  "platforms": ["Windows", "Linux", "Darwin"],
+  "installinstructions": {
+    "Windows": "Place folder under %APPDATA%/Binary Ninja/plugins/",
+    "Linux": "Place folder under ~/.binaryninja/plugins/",
+    "Darwin": "Place folder under ~/Library/Application Support/Binary Ninja/plugins/"
+  },
+  "version": "0.1.0",
+  "author": "internal",
+  "minimumbinaryninjaversion": 4000
+}
