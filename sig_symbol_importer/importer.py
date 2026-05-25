@@ -160,8 +160,65 @@ def _set_comment(bv, addr: int, comment: str):
             pass
 
 
-def _apply_function_rename(bv, addr: int, name: str) -> Tuple[bool, str]:
-    """Ensure a function exists at addr and rename it. Returns (ok, note)."""
+def _has_our_tag_at(bv, addr: int) -> bool:
+    """True if any sig_symbol tag (in any scope) exists at this address.
+
+    Used to decide whether we're allowed to undo a previous decision
+    (e.g. demote a wrongly-created function back to data) without
+    clobbering user-authored state.
+    """
+    try:
+        funcs = bv.get_functions_containing(addr) or []
+    except Exception:
+        funcs = []
+    for func in funcs:
+        try:
+            for t in func.get_tags_at(addr, auto=False):
+                if t.type.name == TAG_TYPE_NAME:
+                    return True
+        except Exception:
+            pass
+    try:
+        for t in bv.get_tags_at(addr, auto=False):
+            if t.type.name == TAG_TYPE_NAME:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _parse_type(bv, text: str):
+    """Parse a C-style type string into a Type. Returns (Type, note).
+
+    On parse failure returns (None, error_message). bv.parse_type_string
+    raises SyntaxError on bad input; we surface that message verbatim
+    so the user can fix the JSON.
+    """
+    try:
+        parsed_type, _qname = bv.parse_type_string(text)
+    except SyntaxError as e:
+        return (None, f"parse_type_string error: {e}")
+    except Exception as e:
+        return (None, f"parse_type_string exception: {e!r}")
+    return (parsed_type, "")
+
+
+def _apply_function_rename(bv, addr: int, name: str, prototype: str = "") -> Tuple[bool, str]:
+    """Ensure a function exists at addr, rename it, and optionally set its type.
+
+    If a data var exists at addr from a prior (mis-classified) import — evidenced
+    by the presence of our sig_symbol tag — undefine it first so the function
+    create lands cleanly.
+    """
+    notes = []
+
+    if _has_our_tag_at(bv, addr) and bv.get_data_var_at(addr) is not None:
+        try:
+            bv.undefine_user_data_var(addr)
+            notes.append("undefined stale data var")
+        except Exception as e:
+            notes.append(f"could not undefine stale data var: {e}")
+
     func = bv.get_function_at(addr)
     created = False
     if func is None:
@@ -169,26 +226,74 @@ def _apply_function_rename(bv, addr: int, name: str) -> Tuple[bool, str]:
         func = bv.create_user_function(addr)
         created = True
     if func is None:
-        return (False, "could not create function")
+        return (False, "; ".join(notes + ["could not create function"]))
+    notes.append("renamed (new function)" if created else "renamed")
+
     existing = bv.get_symbol_at(addr)
     if existing is not None and not existing.auto and existing.name != name:
-        return (True, f"kept user name {existing.name!r} (would-be: {name!r})")
-    bv.define_user_symbol(Symbol(SymbolType.FunctionSymbol, addr, name))
-    return (True, "renamed (new function)" if created else "renamed")
+        notes.append(f"kept user name {existing.name!r} (would-be: {name!r})")
+    else:
+        bv.define_user_symbol(Symbol(SymbolType.FunctionSymbol, addr, name))
 
-
-def _apply_data_rename(bv, addr: int, name: str) -> Tuple[bool, str]:
-    """Ensure a data var exists at addr and rename it as a DataSymbol."""
-    if bv.get_data_var_at(addr) is None:
+    if prototype:
+        # Function.set_user_type accepts a string and parses it internally
+        # via bv.parse_type_string. The parsed type's name (if any) is
+        # discarded by set_user_type, so our define_user_symbol name above
+        # is preserved.
         try:
-            bv.define_user_data_var(addr, Type.pointer(bv.arch, Type.void()))
+            func.set_user_type(prototype)
+            notes.append("prototype applied")
+        except SyntaxError as e:
+            notes.append(f"prototype parse error: {e}")
         except Exception as e:
-            return (False, f"could not create data var: {e}")
+            notes.append(f"prototype apply error: {e!r}")
+
+    return (True, "; ".join(notes))
+
+
+def _apply_data_rename(bv, addr: int, name: str, data_type: str = "") -> Tuple[bool, str]:
+    """Ensure a data var exists at addr with the right type, and rename it.
+
+    If a function exists at addr from a prior (mis-classified) import — evidenced
+    by the presence of our sig_symbol tag — remove it first so the data var
+    create lands cleanly.
+    """
+    notes = []
+
+    if _has_our_tag_at(bv, addr):
+        func = bv.get_function_at(addr)
+        if func is not None:
+            try:
+                bv.remove_user_function(func)
+                notes.append("removed stale auto-created function")
+            except Exception as e:
+                notes.append(f"could not remove stale function: {e}")
+
+    # Resolve the type to use for the data var.
+    if data_type:
+        parsed_type, parse_note = _parse_type(bv, data_type)
+        if parsed_type is None:
+            notes.append(f"data_type fallback to void* ({parse_note})")
+            var_type = Type.pointer(bv.arch, Type.void())
+        else:
+            var_type = parsed_type
+    else:
+        var_type = Type.pointer(bv.arch, Type.void())
+
+    # define_user_data_var is idempotent and also re-types an existing var,
+    # so we can call it unconditionally rather than gating on get_data_var_at.
+    try:
+        bv.define_user_data_var(addr, var_type)
+    except Exception as e:
+        return (False, "; ".join(notes + [f"could not create data var: {e}"]))
+
     existing = bv.get_symbol_at(addr)
     if existing is not None and not existing.auto and existing.name != name:
-        return (True, f"kept user name {existing.name!r} (would-be: {name!r})")
-    bv.define_user_symbol(Symbol(SymbolType.DataSymbol, addr, name))
-    return (True, "renamed")
+        notes.append(f"kept user name {existing.name!r} (would-be: {name!r})")
+    else:
+        bv.define_user_symbol(Symbol(SymbolType.DataSymbol, addr, name))
+        notes.append("renamed")
+    return (True, "; ".join(notes))
 
 
 def _resolve_symbol(bv, entry: dict, bv_basename: str) -> SymbolStatus:
@@ -257,14 +362,16 @@ def _apply_symbol(bv, entry: dict, status: SymbolStatus, log) -> None:
     label = entry.get("label") or ""
     kind = (entry.get("kind") or "function").lower()
     user_comment = entry.get("comment") or ""
+    prototype = entry.get("prototype") or ""
+    data_type = entry.get("data_type") or ""
 
     apply_ok = True
     apply_note = ""
 
     if kind == "function":
-        apply_ok, apply_note = _apply_function_rename(bv, addr, name)
+        apply_ok, apply_note = _apply_function_rename(bv, addr, name, prototype)
     elif kind == "data":
-        apply_ok, apply_note = _apply_data_rename(bv, addr, name)
+        apply_ok, apply_note = _apply_data_rename(bv, addr, name, data_type)
     elif kind == "raw":
         apply_note = "raw (bookmark + comment only)"
     else:
