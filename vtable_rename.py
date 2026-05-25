@@ -18,6 +18,7 @@ import re
 
 from binaryninja import (
     PluginCommand,
+    BackgroundTaskThread,
     Type,
     StructureBuilder,
     QualifiedName,
@@ -434,41 +435,47 @@ def _retype_pass(bv, chosen):
     )
 
 
+class _VtableRenameTask(BackgroundTaskThread):
+    """Run rename / retype work off the UI thread.
+
+    PluginCommand callbacks fire on the UI thread, where binja forbids any
+    operation that internally waits for analysis (`update_analysis_and_wait`,
+    or implicit waits triggered by `param_var.type = T`). Wrapping in a
+    BackgroundTaskThread is the supported way to do this kind of bulk
+    type/symbol mutation.
+    """
+
+    def __init__(self, bv, do_pass1, do_pass2, label):
+        super().__init__(f"vtable_rename: {label}", can_cancel=False)
+        self.bv = bv
+        self.do_pass1 = do_pass1
+        self.do_pass2 = do_pass2
+
+    def run(self):
+        chosen = _collect_chosen(self.bv)
+        if not chosen:
+            log_warn("vtable_rename: no `*::VTable` data vars found")
+            return
+        self.bv.begin_undo_actions()
+        try:
+            if self.do_pass1:
+                _rename_pass(self.bv, chosen)
+            if self.do_pass2:
+                _retype_pass(self.bv, chosen)
+        finally:
+            self.bv.commit_undo_actions()
+
+
 def cmd_pass1(bv):
-    chosen = _collect_chosen(bv)
-    if not chosen:
-        log_warn("vtable_rename: no `*::VTable` data vars found")
-        return
-    bv.begin_undo_actions()
-    try:
-        _rename_pass(bv, chosen)
-    finally:
-        bv.commit_undo_actions()
+    _VtableRenameTask(bv, do_pass1=True, do_pass2=False, label="pass1").start()
 
 
 def cmd_pass2(bv):
-    chosen = _collect_chosen(bv)
-    if not chosen:
-        log_warn("vtable_rename: no `*::VTable` data vars found")
-        return
-    bv.begin_undo_actions()
-    try:
-        _retype_pass(bv, chosen)
-    finally:
-        bv.commit_undo_actions()
+    _VtableRenameTask(bv, do_pass1=False, do_pass2=True, label="pass2").start()
 
 
 def cmd_both(bv):
-    chosen = _collect_chosen(bv)
-    if not chosen:
-        log_warn("vtable_rename: no `*::VTable` data vars found")
-        return
-    bv.begin_undo_actions()
-    try:
-        _rename_pass(bv, chosen)
-        _retype_pass(bv, chosen)
-    finally:
-        bv.commit_undo_actions()
+    _VtableRenameTask(bv, do_pass1=True, do_pass2=True, label="both").start()
 
 
 def _tc_name(tc):
